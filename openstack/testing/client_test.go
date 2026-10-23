@@ -8,6 +8,7 @@ import (
 
 	"github.com/gophercloud/gophercloud/v2"
 	"github.com/gophercloud/gophercloud/v2/openstack"
+	tokens3 "github.com/gophercloud/gophercloud/v2/openstack/identity/v3/tokens"
 	th "github.com/gophercloud/gophercloud/v2/testhelper"
 )
 
@@ -380,4 +381,38 @@ func TestServiceClientResourceBase(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestNewLoadBalancerV2WithPatchVersions(t *testing.T) {
+	fakeServer := th.SetupHTTP()
+	defer fakeServer.Teardown()
+	fakeServer.Mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		th.TestMethod(t, r, "GET")
+		fmt.Fprint(w, `{"versions": [
+			{"id": "v2.0", "status": "SUPPORTED"},
+			{"id": "v2.14", "status": "SUPPORTED"},
+			{"id": "v2.14.1", "status": "SUPPORTED"},
+			{"id": "v2.14.5", "status": "CURRENT"}
+		]}`)
+	})
+
+	catalog := &tokens3.ServiceCatalog{
+		Entries: []tokens3.CatalogEntry{
+			{
+				Type: "load-balancer",
+				Endpoints: []tokens3.Endpoint{
+					{Interface: "public", Region: "RegionOne", URL: fakeServer.Endpoint()},
+				},
+			},
+		},
+	}
+	provider := &gophercloud.ProviderClient{}
+	provider.EndpointLocator = func(ctx context.Context, opts gophercloud.EndpointOpts) (string, error) {
+		return openstack.V3Endpoint(ctx, provider, catalog, opts)
+	}
+
+	client, err := openstack.NewLoadBalancerV2(context.TODO(), provider, gophercloud.EndpointOpts{Region: "RegionOne"})
+	th.AssertNoErr(t, err)
+	th.CheckEquals(t, fakeServer.Endpoint(), client.Endpoint)
+	th.CheckEquals(t, fakeServer.Endpoint()+"v2.0/", client.ResourceBaseURL())
 }

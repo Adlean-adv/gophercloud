@@ -186,11 +186,21 @@ func GetServiceVersions(ctx context.Context, client *gophercloud.ProviderClient,
 	}
 
 	versions := resp.Versions
+	patchVersionRe := regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+$`)
+	var patchVersionErr error
 
 	for _, version := range versions {
 		majorVersion, minorVersion, err := ParseVersion(version.ID)
 		if err != nil {
-			return supportedVersions, err
+			// Some providers advertise non-standard patch versions alongside
+			// standard versions. Ignore them when a standard version is available.
+			if !patchVersionRe.MatchString(version.ID) {
+				return supportedVersions, err
+			}
+			if patchVersionErr == nil {
+				patchVersionErr = err
+			}
+			continue
 		}
 
 		status, err := ParseStatus(version.Status)
@@ -222,6 +232,10 @@ func GetServiceVersions(ctx context.Context, client *gophercloud.ProviderClient,
 		}
 
 		supportedVersions = append(supportedVersions, supportedVersion)
+	}
+
+	if len(supportedVersions) == 0 {
+		return supportedVersions, patchVersionErr
 	}
 
 	sort.Slice(supportedVersions, func(i, j int) bool {
