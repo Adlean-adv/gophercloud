@@ -2,6 +2,8 @@ package testing
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -487,4 +489,115 @@ func TestMicroversionSupported(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGetServiceVersionsPatchVersions(t *testing.T) {
+	tests := []struct {
+		name             string
+		response         string
+		expectedVersions []utils.SupportedVersion
+		expectedErr      string
+	}{
+		{
+			name: "patch versions before supported versions",
+			response: `{"versions": [
+				{"id": "v2.14.1", "status": "SUPPORTED"},
+				{"id": "v2.14.5", "status": "CURRENT"},
+				{"id": "v2.0", "status": "SUPPORTED"},
+				{"id": "v2.14", "status": "SUPPORTED"}
+			]}`,
+			expectedVersions: []utils.SupportedVersion{
+				{Major: 2, Minor: 14, Status: utils.StatusSupported},
+				{Major: 2, Minor: 0, Status: utils.StatusSupported},
+			},
+		},
+		{
+			name: "patch versions after supported versions",
+			response: `{"versions": [
+				{"id": "v2.14", "status": "SUPPORTED"},
+				{"id": "v2.14.1", "status": "CURRENT"}
+			]}`,
+			expectedVersions: []utils.SupportedVersion{
+				{Major: 2, Minor: 14, Status: utils.StatusSupported},
+			},
+		},
+		{
+			name: "patch versions without prefix",
+			response: `{"versions": [
+				{"id": "2.14.1", "status": "CURRENT"},
+				{"id": "2.14", "status": "SUPPORTED"}
+			]}`,
+			expectedVersions: []utils.SupportedVersion{
+				{Major: 2, Minor: 14, Status: utils.StatusSupported},
+			},
+		},
+		{
+			name: "major version alongside patch versions",
+			response: `{"versions": [
+				{"id": "v2.14.1", "status": "SUPPORTED"},
+				{"id": "v2", "status": "CURRENT"}
+			]}`,
+			expectedVersions: []utils.SupportedVersion{
+				{Major: 2, Minor: 0, Status: utils.StatusCurrent},
+			},
+		},
+		{
+			name: "only patch versions",
+			response: `{"versions": [
+				{"id": "v2.14.1", "status": "SUPPORTED"},
+				{"id": "v2.14.5", "status": "CURRENT"}
+			]}`,
+			expectedErr: `invalid format: "v2.14.1"`,
+		},
+		{
+			name: "malformed version after patch version",
+			response: `{"versions": [
+				{"id": "v2.14.1", "status": "SUPPORTED"},
+				{"id": "v2..14", "status": "CURRENT"}
+			]}`,
+			expectedErr: `invalid format: "v2..14"`,
+		},
+		{
+			name: "invalid status after patch version",
+			response: `{"versions": [
+				{"id": "v2.14.1", "status": "SUPPORTED"},
+				{"id": "v2.14", "status": "invalid"}
+			]}`,
+			expectedErr: `invalid status: "invalid"`,
+		},
+		{
+			name: "invalid microversion after patch version",
+			response: `{"versions": [
+				{"id": "v2.14.1", "status": "SUPPORTED"},
+				{"id": "v2.14", "status": "CURRENT", "min_version": "2.0", "max_version": "2.14.1"}
+			]}`,
+			expectedErr: `invalid microversion format: "2.14.1"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeServer := th.SetupHTTP()
+			defer fakeServer.Teardown()
+			fakeServer.Mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+				th.TestMethod(t, r, "GET")
+				fmt.Fprint(w, tt.response)
+			})
+
+			versions, err := utils.GetServiceVersions(context.TODO(), &gophercloud.ProviderClient{}, fakeServer.Endpoint(), true)
+			if tt.expectedErr != "" {
+				th.AssertErr(t, err)
+				th.AssertEquals(t, tt.expectedErr, err.Error())
+				return
+			}
+			th.AssertNoErr(t, err)
+			th.AssertDeepEquals(t, tt.expectedVersions, versions)
+		})
+	}
+}
+
+func TestParseVersionRejectsPatchVersions(t *testing.T) {
+	_, _, err := utils.ParseVersion("v2.14.1")
+	th.AssertErr(t, err)
+	th.AssertEquals(t, `invalid format: "v2.14.1"`, err.Error())
 }
